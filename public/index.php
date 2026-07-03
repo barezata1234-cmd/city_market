@@ -1,15 +1,20 @@
-<!DOCTYPE html>
-<html lang="ku" dir="rtl">
-<head>
-    <meta charset="UTF-8">
-    <title>City Market</title>
-    <style>
-        body { font-family: sans-serif; text-align: center; padding: 50px; background: #f4f4f4; }
-        h1 { color: #333; }
-    </style>
-</head>
-<body>
-    <h1>بەخێربێن بۆ سیستەمی سیتی مارکێت</h1>
-    <p>ئەمە بەشی ڕوکاری ماڵپەڕەکەیە لەسەر فایربەیس!</p>
-</body>
-</html>
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Http\Request;
+
+define('LARAVEL_START', microtime(true));
+
+// Determine if the application is in maintenance mode...
+if (file_exists($maintenance = __DIR__.'/../storage/framework/maintenance.php')) {
+    require $maintenance;
+}
+
+// Register the Composer autoloader...
+require __DIR__.'/../vendor/autoload.php';
+
+// Bootstrap Laravel and handle the request...
+/** @var Application $app */
+$app = require_once __DIR__.'/../bootstrap/app.php';
+
+$app->handleRequest(Request::capture());
