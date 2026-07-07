@@ -32,11 +32,9 @@ class SyncController extends Controller
         if (!$this->checkToken($request)) {
             return response()->json(['error' => 'Unauthorized'], 401);
         }
-
-        $users = User::where('can_use_offline', true)
-            ->where('is_active', true)
-            ->select('email', 'name', 'password')
-            ->get();
+$users = User::where('can_use_offline', true)
+    ->select('email', 'name', 'password') // لێرەدا پاسۆردە حاشکراوەکە دەڕوات!
+    ->get();
 
         return response()->json($users);
     }
