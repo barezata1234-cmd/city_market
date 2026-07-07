@@ -13,13 +13,24 @@ use App\Livewire\Sales\Create as SalesCreate;
 use App\Livewire\Purchases\Index as PurchasesIndex;
 use App\Livewire\Purchases\Create as PurchasesCreate;
 use Illuminate\Support\Facades\Route;
-
+use App\Livewire\Auth\ForgotPassword;// ڕاستکرایەوە بۆ Livewire
+ use App\Livewire\Auth\ResetPassword;
 Route::get('/', fn () => redirect()->route('dashboard'));
 
 // Guest routes
 Route::middleware('guest')->group(function () {
     Route::get('/login', [LoginController::class, 'showLoginForm'])->name('login');
     Route::post('/login', [LoginController::class, 'login']);
+    Route::get('/reset-password/{token}', function ($token) {
+    return view('auth.reset-password', ['token' => $token]);
+})->middleware('guest')->name('password.reset');
+    // ڕاوتی لایڤوایەر بۆ بیرچوونەوەی وشەی نهێنی
+  Route::get('/forgot-password', ForgotPassword::class)->middleware('guest')->name('password.request');
+ 
+
+Route::get('/reset-password/{token}', ResetPassword::class)
+    ->middleware('guest')
+    ->name('password.reset');
 });
 
 // Authenticated routes

@@ -10,22 +10,17 @@ use App\Models\SaleItem;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
 
 class SyncController extends Controller
 {
-    /**
-     * پشکنینی simple token بۆ ئەپڵیکەیشنی دێسکتۆپ (لەجیاتی session/login ئاسایی)
-     */
     private function checkToken(Request $request): bool
     {
         $token = $request->header('X-Sync-Token');
-        return $token && hash_equals((string) env('SYNC_TOKEN', ''), (string) $token);
+        $secureToken = (string) env('SYNC_TOKEN', '');
+        return !empty($secureToken) && $token && hash_equals($secureToken, (string) $token);
     }
 
-    /**
-     * کاشی بەرهەمەکان — بۆ ئەوەی ئەپلیکەیشنی دێسکتۆپ لۆکاڵی هەڵبگرێت
-     */
     public function products(Request $request)
     {
         if (!$this->checkToken($request)) {
@@ -39,25 +34,21 @@ class SyncController extends Controller
         return response()->json($products);
     }
 
-    /**
-     * کاشی کڕیارەکان
-     */
     public function customers(Request $request)
     {
         if (!$this->checkToken($request)) {
             return response()->json(['error' => 'Unauthorized'], 401);
         }
 
-        $customers = Customer::where('is_active', true)->select('id', 'name')->get();
+        $customers = Customer::where('is_active', true)
+            ->select('id', 'name')
+            ->get();
 
         return response()->json($customers);
     }
 
     /**
-     * وەرگرتنی فرۆشتنە offline کراوەکان و تۆمارکردنیان
-     * Body: { "sales": [ { "local_id": "...", "customer_id": null, "discount": 0, "paid": 1000,
-     *                      "payment_method": "cash", "created_at": "...", "cashier_email": "...",
-     *                      "items": [ {"product_id": 1, "qty": 2, "price": 500}, ... ] }, ... ] }
+     * هاوکاتکردنی فاکتۆرە ئۆفلاینەکان (پێشکەوتوو و پارێزراو)
      */
     public function syncSales(Request $request)
     {
@@ -69,10 +60,11 @@ class SyncController extends Controller
             'sales' => 'required|array',
             'sales.*.local_id' => 'required|string',
             'sales.*.customer_id' => 'nullable|integer',
-            'sales.*.discount' => 'numeric',
-            'sales.*.paid' => 'numeric',
+            'sales.*.discount' => 'numeric|min:0',
+            'sales.*.paid' => 'numeric|min:0',
             'sales.*.payment_method' => 'in:cash,card,credit',
             'sales.*.cashier_email' => 'required|email',
+            'sales.*.created_at' => 'nullable|date',
             'sales.*.items' => 'required|array|min:1',
             'sales.*.items.*.product_id' => 'required|integer',
             'sales.*.items.*.qty' => 'required|integer|min:1',
@@ -82,74 +74,117 @@ class SyncController extends Controller
         $results = [];
 
         foreach ($data['sales'] as $offlineSale) {
-            // ئەگەر پێشتر sync کرابوو (بەهۆی دووبارە هەوڵدانەوە)، جێبەجێی مەکەرەوە
-            $existing = Sale::where('note', 'LIKE', '%offline_id:' . $offlineSale['local_id'] . '%')->first();
+            
+            // 🛠️ چارەسەری کێشەی خاوڕێوەچوون: گۆڕینی LIKE بۆ کوێری ڕاستەوخۆ 
+            // تێبینی: پێویستە ستونی local_id لە خشتەی sales هەبێت و Index بێت.
+            $existing = Sale::where('local_id', $offlineSale['local_id'])->first();
             if ($existing) {
-                $results[] = ['local_id' => $offlineSale['local_id'], 'invoice_number' => $existing->invoice_number, 'status' => 'already_synced'];
+                $results[] = [
+                    'local_id' => $offlineSale['local_id'], 
+                    'invoice_number' => $existing->invoice_number, 
+                    'status' => 'already_synced'
+                ];
                 continue;
             }
 
+            // دۆزینەوەی کاشێر
             $user = User::where('email', $offlineSale['cashier_email'])->first();
             if (!$user) {
-                $results[] = ['local_id' => $offlineSale['local_id'], 'error' => 'کاشێری نەدۆزرایەوە'];
+                $results[] = [
+                    'local_id' => $offlineSale['local_id'], 
+                    'error' => 'کاشێری دیاریکراو لە سێرڤەر بوونی نییە'
+                ];
                 continue;
             }
 
             try {
-                DB::transaction(function () use ($offlineSale, $user, &$results) {
+                // دەستپێکردنی Transaction بۆ هەر فاکتۆرێک بە جیا
+                $syncResult = DB::transaction(function () use ($offlineSale, $user) {
+                    
+                    // 🛠️ چارەسەری Deadlock و N+1:
+                    // ١. کۆکردنەوەی هەموو ئایدی بەرهەمەکان
+                    $productIds = collect($offlineSale['items'])->pluck('product_id')->unique()->sort()->toArray();
+                    
+                    // ٢. قفڵکردنی هەموو بەرهەمەکان بەیەکەوە بەپێی ڕیزبەندی ئایدی
+                    $products = Product::whereIn('id', $productIds)->lockForUpdate()->get()->keyBy('id');
+
                     $total = 0;
                     $validItems = [];
+
                     foreach ($offlineSale['items'] as $item) {
-                        $product = Product::find($item['product_id']);
+                        $product = $products->get($item['product_id']);
+                        
                         if (!$product) continue;
+
                         $qty = (int) $item['qty'];
                         $price = (float) $item['price'];
                         $total += $price * $qty;
-                        $validItems[] = ['product_id' => $product->id, 'qty' => $qty, 'price' => $price];
+
+                        $validItems[] = [
+                            'product' => $product,
+                            'qty' => $qty,
+                            'price' => $price
+                        ];
                     }
 
                     if (empty($validItems)) {
-                        $results[] = ['local_id' => $offlineSale['local_id'], 'error' => 'هیچ بەرهەمێکی دروست نەبوو'];
-                        return;
+                        throw new \Exception('هیچ بەرهەمێکی دروست یان مەوجود لەم فاکتۆرەدا نەدۆزرایەوە');
                     }
 
-                    $total = max(0, $total - ($offlineSale['discount'] ?? 0));
+                    $discount = (float) ($offlineSale['discount'] ?? 0);
+                    $total = max(0, $total - $discount);
                     $paid = (float) ($offlineSale['paid'] ?? 0);
                     $remaining = max(0, $total - $paid);
+                    
                     $status = $remaining <= 0 ? 'paid' : ($paid > 0 ? 'partial' : 'unpaid');
+                    $saleDate = isset($offlineSale['created_at']) ? now()->parse($offlineSale['created_at']) : now();
+                    $invoiceNumber = 'INV-' . $saleDate->format('YmdHi') . '-' . strtoupper(Str::random(4));
 
-                    $invoiceNumber = 'INV-' . now()->format('Ymd') . '-' . str_pad(
-                        Sale::whereDate('created_at', today())->count() + 1, 4, '0', STR_PAD_LEFT
-                    );
-
+                    // دروستکردنی فاکتۆر
                     $sale = Sale::create([
                         'invoice_number' => $invoiceNumber,
+                        'local_id' => $offlineSale['local_id'], // پاشەکەوتکردنی ڕاستەوخۆ بۆ خشتەکە
                         'customer_id' => $offlineSale['customer_id'] ?? null,
                         'user_id' => $user->id,
                         'total' => $total,
-                        'discount' => $offlineSale['discount'] ?? 0,
+                        'discount' => $discount,
                         'paid' => $paid,
                         'remaining' => $remaining,
                         'status' => $status,
                         'payment_method' => $offlineSale['payment_method'] ?? 'cash',
-                        'note' => 'offline_id:' . $offlineSale['local_id'] . ' (sync کراوە لە کاتی نەبوونی ئینتەرنێت)',
+                        'note' => 'هاوکاتکراوە لە کاتی گەڕانەوەی ئینتەرنێت',
+                        'created_at' => $saleDate,
+                        'updated_at' => now(),
                     ]);
 
+                    // پاشەکەوتکردنی ئایتمەکان و کەمکردنەوەی کۆگا
                     foreach ($validItems as $vi) {
                         SaleItem::create([
                             'sale_id' => $sale->id,
-                            'product_id' => $vi['product_id'],
+                            'product_id' => $vi['product']->id,
                             'quantity' => $vi['qty'],
                             'unit_price' => $vi['price'],
                             'total' => $vi['price'] * $vi['qty'],
                         ]);
-                        Product::where('id', $vi['product_id'])->decrement('quantity', $vi['qty']);
+
+                        // کەمکردنەوەی کۆگا
+                        $vi['product']->decrement('quantity', $vi['qty']);
                     }
 
-                    $results[] = ['local_id' => $offlineSale['local_id'], 'invoice_number' => $sale->invoice_number, 'status' => 'synced'];
+                    return [
+                        'local_id' => $offlineSale['local_id'], 
+                        'invoice_number' => $sale->invoice_number, 
+                        'status' => 'synced'
+                    ];
                 });
+
+                $results[] = $syncResult;
+
             } catch (\Exception $e) {
-                $results[] = ['local_id' => $offlineSale['local_id'], 'error' => $e->getMessage()];
+                $results[] = [
+                    'local_id' => $offlineSale['local_id'], 
+                    'error' => 'هەڵەیەک ڕوویدا لە کاتی جێبەجێکردندا: ' . $e->getMessage()
+                ];
             }
         }
 
