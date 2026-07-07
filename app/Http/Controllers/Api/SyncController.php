@@ -10,21 +10,22 @@ use App\Models\SaleItem;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Hash;
+use Log;
 
 class SyncController extends Controller
 {
     /**
-     * پشکنینی simple token بۆ ئەپڵیکەیشنی دێسکتۆپ (لەجیاتی session/login ئاسایی)
+     * پشکنینی simple token بۆ ئەپڵیکەیشنی دێسکتۆپ
      */
     private function checkToken(Request $request): bool
     {
         $token = $request->header('X-Sync-Token');
-        return $token && hash_equals((string) env('SYNC_TOKEN', ''), (string) $token);
+        // بەکارهێنانی config() لەجیاتی env() ڕاستەوخۆ لە ناو کۆنتڕۆڵەردا
+        return $token && hash_equals((string) config('app.sync_token', env('SYNC_TOKEN', '')), (string) $token);
     }
 
     /**
-     * لیستی بەکارهێنەرانی مۆڵەتدراو بۆ چوونەژوورەوەی offline (تەنها ئەوانەی can_use_offline=true)
+     * لیستی بەکارهێنەرانی مۆڵەتدراو بۆ چوونەژوورەوەی offline
      */
     public function offlineUsers(Request $request)
     {
@@ -41,7 +42,7 @@ class SyncController extends Controller
     }
 
     /**
-     * کاشی بەرهەمەکان — بۆ ئەوەی ئەپلیکەیشنی دێسکتۆپ لۆکاڵی هەڵبگرێت
+     * کاشی بەرهەمەکان
      */
     public function products(Request $request)
     {
@@ -72,9 +73,6 @@ class SyncController extends Controller
 
     /**
      * وەرگرتنی فرۆشتنە offline کراوەکان و تۆمارکردنیان
-     * Body: { "sales": [ { "local_id": "...", "customer_id": null, "discount": 0, "paid": 1000,
-     *                      "payment_method": "cash", "created_at": "...", "cashier_email": "...",
-     *                      "items": [ {"product_id": 1, "qty": 2, "price": 500}, ... ] }, ... ] }
      */
     public function syncSales(Request $request)
     {
@@ -99,10 +97,14 @@ class SyncController extends Controller
         $results = [];
 
         foreach ($data['sales'] as $offlineSale) {
-            // ئەگەر پێشتر sync کرابوو (بەهۆی دووبارە هەوڵدانەوە)، جێبەجێی مەکەرەوە
-            $existing = Sale::where('note', 'LIKE', '%offline_id:' . $offlineSale['local_id'] . '%')->first();
+            // ١. چاککردنی کێشەی وەک یەک بوونی کلیلەکان لە بنکەی داتادا
+            $existing = Sale::where('note', 'LIKE', 'offline_id:' . $offlineSale['local_id'] . '%')->first();
             if ($existing) {
-                $results[] = ['local_id' => $offlineSale['local_id'], 'invoice_number' => $existing->invoice_number, 'status' => 'already_synced'];
+                $results[] = [
+                    'local_id' => $offlineSale['local_id'], 
+                    'invoice_number' => $existing->invoice_number, 
+                    'status' => 'already_synced'
+                ];
                 continue;
             }
 
@@ -112,22 +114,25 @@ class SyncController extends Controller
                 continue;
             }
 
+            // لێرە خستنە ناو تڕانزاکشنەوە بۆ ئەوەی ئەگەر لە ناو لۆپەکەش کێشەیەک ڕوویدا داتاکان تێک نەچن
             try {
-                DB::transaction(function () use ($offlineSale, $user, &$results) {
+                // بەکارهێنانی throwException یان گەڕانەوەی ئەنجام بە شێوەی دروست
+                $result = DB::transaction(function () use ($offlineSale, $user) {
                     $total = 0;
                     $validItems = [];
+                    
                     foreach ($offlineSale['items'] as $item) {
                         $product = Product::find($item['product_id']);
                         if (!$product) continue;
+                        
                         $qty = (int) $item['qty'];
                         $price = (float) $item['price'];
                         $total += $price * $qty;
-                        $validItems[] = ['product_id' => $product->id, 'qty' => $qty, 'price' => $price];
+                        $validItems[] = ['product' => $product, 'qty' => $qty, 'price' => $price];
                     }
 
                     if (empty($validItems)) {
-                        $results[] = ['local_id' => $offlineSale['local_id'], 'error' => 'هیچ بەرهەمێکی دروست نەبوو'];
-                        return;
+                        throw new \Exception('هیچ بەرهەمێکی دروست نەبوو');
                     }
 
                     $total = max(0, $total - ($offlineSale['discount'] ?? 0));
@@ -135,9 +140,9 @@ class SyncController extends Controller
                     $remaining = max(0, $total - $paid);
                     $status = $remaining <= 0 ? 'paid' : ($paid > 0 ? 'partial' : 'unpaid');
 
-                    $invoiceNumber = 'INV-' . now()->format('Ymd') . '-' . str_pad(
-                        Sale::whereDate('created_at', today())->count() + 1, 4, '0', STR_PAD_LEFT
-                    );
+                    // ٢. چاککردنی کێشەی Race Condition لە دروستکردنی ژمارەی پسوولەدا (بەکارهێنانی لۆک بۆ هاوکاتی)
+                    $todayCount = Sale::whereDate('created_at', today())->lockForUpdate()->count();
+                    $invoiceNumber = 'INV-' . now()->format('Ymd') . '-' . str_pad($todayCount + 1, 4, '0', STR_PAD_LEFT);
 
                     $sale = Sale::create([
                         'invoice_number' => $invoiceNumber,
@@ -155,17 +160,24 @@ class SyncController extends Controller
                     foreach ($validItems as $vi) {
                         SaleItem::create([
                             'sale_id' => $sale->id,
-                            'product_id' => $vi['product_id'],
+                            'product_id' => $vi['product']->id,
                             'quantity' => $vi['qty'],
                             'unit_price' => $vi['price'],
                             'total' => $vi['price'] * $vi['qty'],
                         ]);
-                        Product::where('id', $vi['product_id'])->decrement('quantity', $vi['qty']);
+                        
+                        // ٣. کەمکردنەوەی بڕی کۆگا بە شێوەی ڕاستەوخۆ لە سێرڤەر نەک لۆکاڵی بۆ دوورکەوتنەوە لە داتای هەڵە
+                        $vi['product']->decrement('quantity', $vi['qty']);
                     }
 
-                    $results[] = ['local_id' => $offlineSale['local_id'], 'invoice_number' => $sale->invoice_number, 'status' => 'synced'];
+                    return ['local_id' => $offlineSale['local_id'], 'invoice_number' => $sale->invoice_number, 'status' => 'synced'];
                 });
+
+                $results[] = $result;
+
             } catch (\Exception $e) {
+                // لێرەدا تۆمارکردنی هەڵەکە لە لۆگی سێرڤەر بۆ ئەوەی بزانیت کێشەکە چی بووە
+                Log::error('Sync error for local_id ' . $offlineSale['local_id'] . ': ' . $e->getMessage());
                 $results[] = ['local_id' => $offlineSale['local_id'], 'error' => $e->getMessage()];
             }
         }
