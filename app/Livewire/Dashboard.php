@@ -6,9 +6,12 @@ use App\Models\Product;
 use App\Models\Sale;
 use App\Models\Expense;
 use Livewire\Component;
+use \app\Models\User;
 
 class Dashboard extends Component
 {
+   
+
     public function render()
     {
         $today = today();

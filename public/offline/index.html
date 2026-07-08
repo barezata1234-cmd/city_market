@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="ckb" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>فرۆشتنی Offline — ماركێتی شارەکەم</title>
+    <link rel="manifest" href="/offline/manifest.json">
+    <meta name="theme-color" content="#141a2b">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/bcryptjs/2.4.3/bcrypt.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Noto Sans Arabic', sans-serif; background:#eef1f5; }
+        .badge-offline { background:#ef4444; }
+        .badge-online { background:#22c55e; }
+    </style>
+</head>
+<body class="min-h-screen p-6">
+
+    <!-- پەڕەی چوونەژوورەوە -->
+    <div id="loginScreen" class="min-h-screen flex items-center justify-center fixed inset-0 bg-[#141a2b] z-50">
+        <div class="bg-white rounded-2xl shadow-lg w-full max-w-sm p-8">
+            <div class="text-center mb-6">
+                <div class="text-2xl mb-2">🔒</div>
+                <div class="text-xl font-bold text-gray-800">چوونەژوورەوە بۆ Offline POS</div>
+                <div class="text-sm text-gray-400 mt-1">تەنها بەکارهێنەرانی مۆڵەتدراو دەتوانن</div>
+            </div>
+            <div id="loginError" class="hidden bg-red-100 text-red-700 px-4 py-2 rounded-lg text-sm mb-4"></div>
+            <div class="space-y-4">
+                <div>
+                    <label class="text-xs text-gray-500">ئیمەیل</label>
+                    <input type="email" id="loginEmail" class="w-full border rounded-lg px-3 py-2 text-sm mt-1">
+                </div>
+                <div>
+                    <label class="text-xs text-gray-500">وشەی نهێنی</label>
+                    <input type="password" id="loginPassword" class="w-full border rounded-lg px-3 py-2 text-sm mt-1"
+                           onkeydown="if(event.key==='Enter') doLogin()">
+                </div>
+                <button onclick="doLogin()" class="w-full bg-[#141a2b] text-white rounded-lg py-2.5 text-sm font-semibold">
+                    چوونەژوورەوە
+                </button>
+                <div id="cacheHint" class="text-xs text-gray-400 text-center"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="posScreen" class="hidden">
+        <div class="flex items-center justify-between mb-5 bg-[#141a2b] text-white rounded-xl px-5 py-3">
+            <div class="font-bold text-lg">🛒 فرۆشتنی Offline — ماركێتی شارەکەم</div>
+            <div class="flex items-center gap-3">
+                <span id="cashierBadge" class="text-xs text-gray-300"></span>
+                <span id="statusBadge" class="badge-offline px-3 py-1 rounded-full text-xs font-semibold">Offline</span>
+                <span id="pendingBadge" class="bg-yellow-500 px-3 py-1 rounded-full text-xs font-semibold hidden">٠ چاوەڕوانی sync</span>
+                <button onclick="syncNow()" class="bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-lg text-xs">🔄 Sync ئێستا</button>
+                <a href="/dashboard" class="bg-gray-600 hover:bg-gray-700 px-3 py-1.5 rounded-lg text-xs">🏠 سایتی سەرەکی</a>
+            </div>
+        </div>
+
+        <div id="syncMsg" class="mb-4 text-sm"></div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+            <div class="lg:col-span-2 bg-white rounded-xl shadow-sm p-4">
+                <input type="text" id="search" onkeyup="filterProducts()" placeholder="گەڕان بۆ بەرهەم..."
+                       class="w-full border rounded-lg px-3 py-2 text-sm mb-4">
+                <div id="products" class="grid grid-cols-2 md:grid-cols-3 gap-3 max-h-[65vh] overflow-y-auto"></div>
+            </div>
+
+            <div class="bg-white rounded-xl shadow-sm p-4 flex flex-col">
+                <div class="font-bold text-gray-700 mb-3">🧾 سەبەتە</div>
+                <div id="cartItems" class="flex-1 overflow-y-auto space-y-2 max-h-[40vh]">
+                    <div class="text-center text-gray-400 text-sm py-10">سەبەتە بەتاڵە</div>
+                </div>
+
+                <div class="mt-4 space-y-2 border-t pt-3">
+                    <select id="customer" class="w-full border rounded-lg px-3 py-2 text-sm">
+                        <option value="">کڕیاری ئاسایی</option>
+                    </select>
+
+                    <div class="flex items-center justify-between text-sm">
+                        <span class="text-gray-500">داشکاندن</span>
+                        <input type="number" id="discount" value="0" oninput="renderCart()" class="w-24 border rounded-lg px-2 py-1 text-sm text-left">
+                    </div>
+
+                    <div class="flex items-center justify-between text-sm font-bold">
+                        <span>کۆی گشتی</span>
+                        <span id="total">0 د.ع</span>
+                    </div>
+
+                    <div class="flex items-center justify-between text-sm">
+                        <span class="text-gray-500">بڕی دراو</span>
+                        <input type="number" id="paid" value="0" class="w-24 border rounded-lg px-2 py-1 text-sm text-left">
+                    </div>
+
+                    <select id="paymentMethod" class="w-full border rounded-lg px-3 py-2 text-sm">
+                        <option value="cash">نەقد</option>
+                        <option value="card">کارت</option>
+                        <option value="credit">قەرز</option>
+                    </select>
+
+                    <button onclick="checkout()" class="w-full bg-[#141a2b] text-white rounded-lg py-2.5 text-sm font-semibold mt-2">
+                        ✅ تەواوکردنی فرۆشتن (Offline)
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = ''; // هەمان domain ـە (سایتی سەرەکی)، بۆیە پێویست بە ناونیشانی تەواو ناکات
+        const CACHE_KEY = 'citymarket_offline_cache';
+        const QUEUE_KEY = 'citymarket_offline_queue';
+
+        let ALL_PRODUCTS = [];
+        let cart = {};
+        let AUTH = null;
+
+        // ==================== یارمەتیدەرەکانی localStorage ====================
+        function getCache() {
+            try { return JSON.parse(localStorage.getItem(CACHE_KEY)) || {}; } catch (e) { return {}; }
+        }
+        function setCache(data) { localStorage.setItem(CACHE_KEY, JSON.stringify(data)); }
+        function getQueue() {
+            try { return JSON.parse(localStorage.getItem(QUEUE_KEY)) || []; } catch (e) { return []; }
+        }
+        function setQueue(data) { localStorage.setItem(QUEUE_KEY, JSON.stringify(data)); }
+
+        // ==================== sync token — هەمان بەهای لای Electron ====================
+        // ئەم بەهایە دەبێت وەک token لە Railway Variables (SYNC_TOKEN) دابنرێت
+        const SYNC_TOKEN = '1f18a9d1f99034717dfffcc46f552b334d42ce594580e989a347689fc5d6d1f0';
+
+        async function apiRequest(method, path, body) {
+            const res = await fetch(API_BASE + path, {
+                method,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-Sync-Token': SYNC_TOKEN,
+                },
+                body: body ? JSON.stringify(body) : undefined,
+            });
+            const data = await res.json().catch(() => null);
+            return { status: res.status, data };
+        }
+
+        async function refreshCache() {
+            try {
+                const [productsRes, customersRes, usersRes] = await Promise.all([
+                    apiRequest('GET', '/api/products'),
+                    apiRequest('GET', '/api/customers'),
+                    apiRequest('GET', '/api/offline-users'),
+                ]);
+                if (productsRes.status === 200 && customersRes.status === 200) {
+                    setCache({
+                        products: productsRes.data,
+                        customers: customersRes.data,
+                        offlineUsers: usersRes.status === 200 ? usersRes.data : [],
+                        lastUpdated: new Date().toISOString(),
+                    });
+                    return true;
+                }
+            } catch (e) { console.error('cache refresh failed', e); }
+            return false;
+        }
+
+        async function syncQueuedSales() {
+            const queue = getQueue();
+            const pending = queue.filter(s => !s._synced);
+            if (pending.length === 0) return { success: true, syncedCount: 0 };
+
+            try {
+                const res = await apiRequest('POST', '/api/sync-sales', { sales: pending });
+                if (res.status === 200 && res.data && res.data.results) {
+                    let syncedCount = 0;
+                    res.data.results.forEach(result => {
+                        const item = queue.find(s => s.local_id === result.local_id);
+                        if (item && (result.status === 'synced' || result.status === 'already_synced')) {
+                            item._synced = true;
+                            item._invoice_number = result.invoice_number;
+                            syncedCount++;
+                        }
+                    });
+                    setQueue(queue);
+                    await refreshCache();
+                    return { success: true, syncedCount };
+                }
+                return { success: false, error: 'وەڵامی سێرڤەر هەڵە بوو' };
+            } catch (e) {
+                return { success: false, error: e.message };
+            }
+        }
+
+        // ==================== چوونەژوورەوە ====================
+        async function doLogin() {
+            const email = document.getElementById('loginEmail').value.trim();
+            const password = document.getElementById('loginPassword').value;
+            const errorBox = document.getElementById('loginError');
+
+            // ئەگەر online ـین، یەکەم جار کاش نوێ بکەوە بۆ دڵنیایی
+            if (navigator.onLine) await refreshCache();
+
+            const cache = getCache();
+            const users = cache.offlineUsers || [];
+            const user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
+
+            if (!user) {
+                errorBox.classList.remove('hidden');
+                errorBox.innerText = 'ئەم بەکارهێنەرە مۆڵەتی بەکارهێنانی offline ی نییە';
+                return;
+            }
+
+            const valid = dcodeIO.bcrypt.compareSync(password, user.password);
+            if (!valid) {
+                errorBox.classList.remove('hidden');
+                errorBox.innerText = 'وشەی نهێنی هەڵەیە';
+                return;
+            }
+
+            AUTH = { name: user.name, email: user.email };
+            document.getElementById('loginScreen').classList.add('hidden');
+            document.getElementById('posScreen').classList.remove('hidden');
+            document.getElementById('cashierBadge').innerText = '👤 ' + user.name;
+            init();
+        }
+
+        // ==================== POS ====================
+        async function init() {
+            const cache = getCache();
+            ALL_PRODUCTS = cache.products || [];
+            renderProducts(ALL_PRODUCTS);
+
+            const customers = cache.customers || [];
+            const sel = document.getElementById('customer');
+            customers.forEach(c => {
+                const opt = document.createElement('option');
+                opt.value = c.id; opt.innerText = c.name;
+                sel.appendChild(opt);
+            });
+
+            updateStatus();
+            setInterval(async () => {
+                if (navigator.onLine) await syncQueuedSales();
+                updateStatus();
+            }, 15000);
+        }
+
+        function updateStatus() {
+            const online = navigator.onLine;
+            const queue = getQueue();
+            const pendingCount = queue.filter(s => !s._synced).length;
+
+            const badge = document.getElementById('statusBadge');
+            badge.className = online ? 'badge-online px-3 py-1 rounded-full text-xs font-semibold' : 'badge-offline px-3 py-1 rounded-full text-xs font-semibold';
+            badge.innerText = online ? 'Online' : 'Offline';
+
+            const pendingBadge = document.getElementById('pendingBadge');
+            if (pendingCount > 0) {
+                pendingBadge.classList.remove('hidden');
+                pendingBadge.innerText = pendingCount + ' چاوەڕوانی sync';
+            } else {
+                pendingBadge.classList.add('hidden');
+            }
+        }
+
+        function renderProducts(list) {
+            const container = document.getElementById('products');
+            container.innerHTML = '';
+            list.forEach(p => {
+                const disabled = p.quantity <= 0;
+                const btn = document.createElement('button');
+                btn.className = 'border rounded-lg p-3 text-right hover:border-[#141a2b] transition' + (disabled ? ' opacity-40 pointer-events-none' : '');
+                btn.innerHTML = `<div class="font-semibold text-sm text-gray-700">${p.name}</div>
+                    <div class="text-xs text-gray-400 mt-1">${Number(p.sale_price).toLocaleString()} د.ع</div>
+                    <div class="text-xs text-gray-400">بەردەست: ${p.quantity}</div>`;
+                btn.onclick = () => addToCart(p);
+                container.appendChild(btn);
+            });
+        }
+
+        function filterProducts() {
+            const q = document.getElementById('search').value.toLowerCase();
+            renderProducts(ALL_PRODUCTS.filter(p => p.name.toLowerCase().includes(q) || (p.barcode || '').includes(q)));
+        }
+
+        function addToCart(p) {
+            if (p.quantity <= 0) return;
+            if (cart[p.id]) {
+                if (cart[p.id].qty < p.quantity) cart[p.id].qty++;
+            } else {
+                cart[p.id] = { name: p.name, price: parseFloat(p.sale_price), qty: 1, stock: p.quantity };
+            }
+            renderCart();
+        }
+
+        function removeFromCart(id) { delete cart[id]; renderCart(); }
+        function updateQty(id, qty) {
+            qty = parseInt(qty);
+            if (qty <= 0) delete cart[id];
+            else if (cart[id]) cart[id].qty = Math.min(qty, cart[id].stock);
+            renderCart();
+        }
+
+        function renderCart() {
+            const container = document.getElementById('cartItems');
+            const ids = Object.keys(cart);
+            if (ids.length === 0) {
+                container.innerHTML = '<div class="text-center text-gray-400 text-sm py-10">سەبەتە بەتاڵە</div>';
+            } else {
+                container.innerHTML = ids.map(id => {
+                    const item = cart[id];
+                    return `<div class="flex items-center justify-between border-b pb-2">
+                        <div>
+                            <div class="text-sm font-medium">${item.name}</div>
+                            <div class="text-xs text-gray-400">${item.price.toLocaleString()} × ${item.qty}</div>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <input type="number" min="1" max="${item.stock}" value="${item.qty}" onchange="updateQty(${id}, this.value)" class="w-14 border rounded px-1 py-1 text-xs text-center">
+                            <button onclick="removeFromCart(${id})" class="text-red-500 text-xs">✕</button>
+                        </div>
+                    </div>`;
+                }).join('');
+            }
+            const discount = parseFloat(document.getElementById('discount').value) || 0;
+            const sum = ids.reduce((s, id) => s + cart[id].price * cart[id].qty, 0);
+            const total = Math.max(0, sum - discount);
+            document.getElementById('total').innerText = total.toLocaleString() + ' د.ع';
+        }
+
+        async function checkout() {
+            const ids = Object.keys(cart);
+            const msg = document.getElementById('syncMsg');
+
+            if (ids.length === 0) { msg.className = 'mb-4 text-sm text-red-500'; msg.innerText = 'سەبەتە بەتاڵە'; return; }
+            if (!AUTH) { msg.className = 'mb-4 text-sm text-red-500'; msg.innerText = 'پێویستە دووبارە بچیتەژوورەوە'; return; }
+
+            const sale = {
+                local_id: 'local-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+                customer_id: document.getElementById('customer').value || null,
+                discount: parseFloat(document.getElementById('discount').value) || 0,
+                paid: parseFloat(document.getElementById('paid').value) || 0,
+                payment_method: document.getElementById('paymentMethod').value,
+                cashier_email: AUTH.email,
+                created_at: new Date().toISOString(),
+                items: ids.map(id => ({ product_id: parseInt(id), qty: cart[id].qty, price: cart[id].price })),
+            };
+
+            const queue = getQueue();
+            queue.push(sale);
+            setQueue(queue);
+
+            let syncedImmediately = false;
+            if (navigator.onLine) {
+                const result = await syncQueuedSales();
+                syncedImmediately = result.success && result.syncedCount > 0;
+            }
+
+            msg.className = 'mb-4 text-sm text-green-600';
+            msg.innerText = syncedImmediately
+                ? '✅ فرۆشتنەکە تۆمارکرا و ڕاستەوخۆ sync کرا!'
+                : '✅ فرۆشتنەکە خەزنکرا لۆکاڵی — کاتێک ئینتەرنێت هاتەوە خۆکارانە sync دەکرێت';
+
+            ids.forEach(id => {
+                const p = ALL_PRODUCTS.find(x => x.id == id);
+                if (p) p.quantity -= cart[id].qty;
+            });
+            cart = {};
+            renderCart();
+            renderProducts(ALL_PRODUCTS);
+            updateStatus();
+        }
+
+        async function syncNow() {
+            const msg = document.getElementById('syncMsg');
+            if (!navigator.onLine) {
+                msg.className = 'mb-4 text-sm text-red-500';
+                msg.innerText = 'ئینتەرنێت نییە — تکایە پەیوەندیت پشکنین بکە';
+                return;
+            }
+            msg.className = 'mb-4 text-sm text-blue-600';
+            msg.innerText = 'Sync دەکرێت...';
+            const result = await syncQueuedSales();
+            if (result.success) {
+                msg.className = 'mb-4 text-sm text-green-600';
+                msg.innerText = `✅ ${result.syncedCount} فرۆشتن بە سەرکەوتوویی sync کران`;
+            } else {
+                msg.className = 'mb-4 text-sm text-red-500';
+                msg.innerText = result.error || 'sync سەرکەوتوو نەبوو';
+            }
+            updateStatus();
+        }
+
+        // ==================== ڕووداوەکانی online/offline ====================
+        window.addEventListener('online', async () => {
+            await syncQueuedSales();
+            updateStatus();
+        });
+        window.addEventListener('offline', updateStatus);
+
+        // ==================== دروستکردنی cache hint لە پەڕەی login ====================
+        (function showCacheHint() {
+            const cache = getCache();
+            const hint = document.getElementById('cacheHint');
+            if (cache.lastUpdated) {
+                hint.innerText = 'دوایین نوێکردنەوەی داتا: ' + new Date(cache.lastUpdated).toLocaleString('ar');
+            } else {
+                hint.innerText = '⚠️ هیچ داتایەکی کاشکراو نییە — پێویستە یەک جار online بیت';
+            }
+        })();
+
+        // ==================== دامەزراندنی Service Worker ====================
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/offline/sw.js').catch(console.error);
+            });
+        }
+
+        // ==================== کاشکردنی سەرەتایی (ئەگەر online ـین) ====================
+        if (navigator.onLine) refreshCache();
+    </script>
+</body>
+</html>

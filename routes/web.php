@@ -1,6 +1,5 @@
 <?php
 
-use App\Http\Controllers\Auth\LoginController;
 use App\Livewire\Dashboard;
 use App\Livewire\Categories\Index as CategoriesIndex;
 use App\Livewire\Products\Index as ProductsIndex;
@@ -12,30 +11,37 @@ use App\Livewire\Sales\Index as SalesIndex;
 use App\Livewire\Sales\Create as SalesCreate;
 use App\Livewire\Purchases\Index as PurchasesIndex;
 use App\Livewire\Purchases\Create as PurchasesCreate;
+use App\Livewire\Auth\ForgotPassword;
+use App\Livewire\Auth\ResetPassword;
+use App\Livewire\Auth\Login; // زیادکرا بۆ لایڤوایەر
 use Illuminate\Support\Facades\Route;
-use App\Livewire\Auth\ForgotPassword;// ڕاستکرایەوە بۆ Livewire
- use App\Livewire\Auth\ResetPassword;
+use Illuminate\Support\Facades\Auth;
+
 Route::get('/', fn () => redirect()->route('dashboard'));
 
-// Guest routes
-Route::middleware('guest')->group(function () {
-    Route::get('/login', [LoginController::class, 'showLoginForm'])->name('login');
-    Route::post('/login', [LoginController::class, 'login']);
-    Route::get('/reset-password/{token}', function ($token) {
-    return view('auth.reset-password', ['token' => $token]);
-})->middleware('guest')->name('password.reset');
-    // ڕاوتی لایڤوایەر بۆ بیرچوونەوەی وشەی نهێنی
-  Route::get('/forgot-password', ForgotPassword::class)->middleware('guest')->name('password.request');
- 
+// پشکنینی چالاکی سێرڤەر: فرۆنتێند بەکاریدەهێنێت بۆ زانینی ئایا ڕاستەقینە
+// ئینتەرنێت/سێرڤەر بەردەستە یان نا (navigator.onLine بەس نییە بۆ ئەمە).
+Route::get('/ping', fn () => response()->noContent());
 
-Route::get('/reset-password/{token}', ResetPassword::class)
-    ->middleware('guest')
-    ->name('password.reset');
+// Guest routes (کاتێک بەکارهێنەر نەچووەتە ژوورەوە)
+Route::middleware('guest')->group(function () {
+    // بەکارهێنانی لایڤوایەر لە جیاتی کۆنتڕۆڵەری کۆن
+    Route::get('/login', Login::class)->name('login');
+    
+    Route::get('/forgot-password', ForgotPassword::class)->name('password.request');
+    Route::get('/reset-password/{token}', ResetPassword::class)->name('password.reset');
 });
 
-// Authenticated routes
+// Authenticated routes (دوای چوونەژوورەوە)
 Route::middleware('auth')->group(function () {
-    Route::post('/logout', [LoginController::class, 'logout'])->name('logout');
+    
+    // لۆجیکی لۆگاوت لێرە بە داخراوی دانرا تا پێویستت بە کۆنتڕۆڵەر نەمێنێت
+    Route::post('/logout', function (\Illuminate\Http\Request $request) {
+        Auth::logout();
+        $request->session()->invalidate();
+        $request->session()->regenerateToken();
+        return redirect()->route('login');
+    })->name('logout');
 
     Route::get('/dashboard', Dashboard::class)->name('dashboard');
 
